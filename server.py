@@ -163,8 +163,9 @@ function playAlarm() {
 }
 
 function startAlarm() {
+  stopAlarm(); // vzdy restartuj
   if (!soundEnabled) return;
-  if (alarmInterval) return;
+
   playAlarm();
   alarmInterval = setInterval(playAlarm, 2000);
 }
@@ -191,7 +192,7 @@ function load() {
       const b = document.getElementById('banner');
       if (alarms.length > 0) {
         b.innerHTML = '<div class="banner">⚠️ PORUCHA: ' + alarms.join(', ') + '</div>';
-        if (count > lastAlarmCount || ts !== lastTs) {
+        if (count > 0) {
           startAlarm();
         }
       } else {
@@ -210,7 +211,7 @@ function load() {
         if (alarm && sensors.length > 0) {
           sensors.forEach(s => {
             // comp = cervena porucha, teamleader = zluta zadost
-            const isComp = (s.type === 'comp') || (s.sensor_id || '').includes('.comp@');
+            const isComp = (s.type === "teamleader") || (s.sensor_id || "").includes(".teamleader@");
             const typ    = isComp ? '<span class="comp">🔴 H</span>' : '<span class="tl">🟡 TL</span>';
             const stroj  = (s.sensor_id || '').split('@')[1]?.split('.')[0]?.toUpperCase() || '';
             detail += ' <small>' + typ + ' ' + stroj + '</small>';
