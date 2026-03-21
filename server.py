@@ -1,13 +1,12 @@
 """
-ANDON CLOUD API SERVER - s real-time refreshem
-Nasadit na Railway.app
+ANDON CLOUD API SERVER
+Railway.app - bez SSE, rychly polling
 """
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify
 from datetime import datetime, timezone
 import os
 import json
-import time
 
 app = Flask(__name__)
 
@@ -17,11 +16,10 @@ _state = {
     "alarm_lines": [],
     "alarm_count": 0,
     "total_lines": 0,
+    "received_at": None,
 }
 
 SECRET = os.environ.get("ANDON_SECRET", "HiLex2024Andon")
-
-# ─── API ENDPOINTS ────────────────────────────────────────────────────────────
 
 @app.route("/api/update", methods=["POST"])
 def update():
@@ -56,33 +54,6 @@ def alarms():
         "alarms":      alarm_detail,
     })
 
-# ─── SERVER-SENT EVENTS (real-time push) ──────────────────────────────────────
-
-@app.route("/api/stream")
-def stream():
-    """SSE endpoint - posila aktualizace okamzite bez pollingu."""
-    def event_stream():
-        last_ts = None
-        while True:
-            current_ts = _state.get("received_at")
-            if current_ts != last_ts:
-                last_ts = current_ts
-                data = json.dumps({
-                    "alarm_count": _state["alarm_count"],
-                    "alarm_lines": _state["alarm_lines"],
-                    "timestamp":   _state["timestamp"],
-                })
-                yield f"data: {data}\n\n"
-            else:
-                # Keepalive
-                yield f": keepalive\n\n"
-            time.sleep(0.5)
-
-    return Response(event_stream(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-# ─── HTML DASHBOARD ───────────────────────────────────────────────────────────
-
 @app.route("/", methods=["GET"])
 def index():
     html = """<!DOCTYPE html>
@@ -98,8 +69,6 @@ def index():
     body { font-family: sans-serif; background: #1a1a2e; color: #eee; padding: 12px; }
     h1 { font-size: 20px; margin-bottom: 4px; }
     .ts { font-size: 11px; color: #aaa; margin-bottom: 12px; }
-    .status-ok   { color: #2ecc71; font-size: 11px; }
-    .status-err  { color: #e74c3c; font-size: 11px; }
     .banner {
       background: #e74c3c; color: white; padding: 12px;
       border-radius: 8px; margin-bottom: 12px;
@@ -107,104 +76,73 @@ def index():
       animation: pulse 1s infinite;
     }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.7} }
+    .ok-banner {
+      background: #27ae60; color: white; padding: 8px;
+      border-radius: 8px; margin-bottom: 12px;
+      font-size: 14px; text-align: center;
+    }
     table { border-collapse: collapse; width: 100%; }
     td { padding: 7px 10px; border-bottom: 1px solid #333; font-size: 14px; }
-    tr:hover td { background: #2a2a4e; }
     .alarm-row td { background: #3a1a1a; }
     .ok   { color: #2ecc71; }
     .warn { color: #e74c3c; font-weight: bold; }
-    #conn { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #aaa; margin-right: 4px; }
-    #conn.live { background: #2ecc71; }
+    #dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#e74c3c; margin-right:4px; }
+    #dot.live { background:#2ecc71; }
   </style>
 </head>
 <body>
   <h1>🏭 Andon Monitor</h1>
-  <div class="ts">
-    <span id="conn"></span>
-    <span id="ts">Načítám...</span>
-  </div>
-  <div id="banner" style="display:none"></div>
+  <div class="ts"><span id="dot"></span><span id="ts">Načítám...</span></div>
+  <div id="banner"></div>
   <table>
     <thead><tr><th></th><th>Linka</th><th>Stav</th></tr></thead>
     <tbody id="tbody"></tbody>
   </table>
 
 <script>
-const conn = document.getElementById('conn');
-const tsEl = document.getElementById('ts');
-const banner = document.getElementById('banner');
-const tbody = document.getElementById('tbody');
+let lastTs = null;
 
-function loadFull() {
+function load() {
   fetch('/api/status')
     .then(r => r.json())
     .then(data => {
+      document.getElementById('dot').className = 'live';
+      const ts     = (data.timestamp || '').replace('T',' ').substring(0,19);
       const alarms = data.alarm_lines || [];
       const lines  = data.lines || {};
-      const ts     = data.timestamp || '';
 
-      tsEl.textContent = 'Update: ' + ts.replace('T',' ').substring(0,19);
+      document.getElementById('ts').textContent = 'Update: ' + ts;
 
+      const b = document.getElementById('banner');
       if (alarms.length > 0) {
-        banner.style.display = 'block';
-        banner.textContent = '⚠️ PORUCHA: ' + alarms.join(', ');
+        b.innerHTML = '<div class="banner">⚠️ PORUCHA: ' + alarms.join(', ') + '</div>';
+        // Zvuk notifikace
+        if (lastTs !== ts) {
+          try { new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAA...').play(); } catch(e) {}
+        }
       } else {
-        banner.style.display = 'none';
+        b.innerHTML = data.timestamp ? '<div class="ok-banner">✅ Všechny linky OK</div>' : '';
       }
+      lastTs = ts;
 
       let rows = '';
       Object.keys(lines).sort().forEach(ln => {
-        const info  = lines[ln];
-        const alarm = info.alarm;
-        const icon  = alarm ? '🔴' : '✅';
-        const cls   = alarm ? 'warn' : 'ok';
-        const txt   = alarm ? 'PORUCHA' : 'OK';
-        rows += `<tr class="${alarm ? 'alarm-row' : ''}">
-          <td>${icon}</td>
-          <td><b>${ln}</b></td>
-          <td class="${cls}">${txt}</td>
-        </tr>`;
+        const alarm = lines[ln].alarm;
+        rows += '<tr class="' + (alarm ? 'alarm-row' : '') + '">' +
+          '<td>' + (alarm ? '🔴' : '✅') + '</td>' +
+          '<td><b>' + ln + '</b></td>' +
+          '<td class="' + (alarm ? 'warn' : 'ok') + '">' + (alarm ? 'PORUCHA' : 'OK') + '</td>' +
+          '</tr>';
       });
-      tbody.innerHTML = rows;
+      document.getElementById('tbody').innerHTML = rows;
     })
-    .catch(e => console.log(e));
+    .catch(() => {
+      document.getElementById('dot').className = '';
+    });
 }
 
-// Server-Sent Events pro okamzite aktualizace
-function connectSSE() {
-  const es = new EventSource('/api/stream');
-
-  es.onopen = () => {
-    conn.className = 'live';
-    tsEl.textContent = 'Připojeno – čekám na data...';
-  };
-
-  es.onmessage = (e) => {
-    const data = JSON.parse(e.data);
-    const alarms = data.alarm_lines || [];
-    tsEl.textContent = 'Update: ' + (data.timestamp || '').replace('T',' ').substring(0,19);
-    if (alarms.length > 0) {
-      banner.style.display = 'block';
-      banner.textContent = '⚠️ PORUCHA: ' + alarms.join(', ');
-    } else {
-      banner.style.display = 'none';
-    }
-    loadFull();
-  };
-
-  es.onerror = () => {
-    conn.className = '';
-    // Fallback na polling kdyz SSE nefunguje
-    setTimeout(connectSSE, 3000);
-  };
-}
-
-// Spust SSE + nacti data hned
-connectSSE();
-loadFull();
-
-// Fallback polling kazdych 5s (pro pripad ze SSE nefunguje)
-setInterval(loadFull, 5000);
+load();
+setInterval(load, 2000);
 </script>
 </body>
 </html>"""
